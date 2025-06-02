@@ -1,103 +1,157 @@
-import Image from "next/image";
+'use client';
+
+import { useState, useEffect, useRef } from 'react';
+import * as exifr from 'exifr';
+import Map from 'ol/Map.js';
+import View from 'ol/View.js';
+import TileLayer from 'ol/layer/Tile.js';
+import OSM from 'ol/source/OSM.js';
+import { fromLonLat } from 'ol/proj.js';
+import VectorLayer from 'ol/layer/Vector.js';
+import VectorSource from 'ol/source/Vector.js';
+import Feature from 'ol/Feature.js';
+import Point from 'ol/geom/Point.js';
+import { Icon, Style } from 'ol/style.js';
 
 export default function Home() {
-  return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm/6 text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-[family-name:var(--font-geist-mono)] font-semibold">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const [metadata, setMetadata] = useState<Record<string, any>>({});
+  const [imageSrc, setImageSrc] = useState<string | null>(null);
+  const [gpsData, setGpsData] = useState<{ latitude: number; longitude: number } | null>(null);
+  const mapRef = useRef<HTMLDivElement | null>(null);
+  const mapInstance = useRef<Map | null>(null);
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const imageUrl = URL.createObjectURL(file);
+    setImageSrc(imageUrl);
+
+    try {
+      const allMetaData = await exifr.parse(file,
+        { tiff: true, gps: true, xmp: true , jfif: true,  }
+      );
+      console.log('All EXIF Metadata:', allMetaData);
+      const gpsMetaData = await exifr.gps(file);  
+
+      const filtered = Object.fromEntries(
+        Object.entries(allMetaData || {}).filter(
+          ([key]) => key !== 'MakerNote' && key !== 'thumbnail'
+        )
+      );
+
+      setMetadata(filtered);
+
+      // Set GPS data if available
+      if (gpsMetaData && gpsMetaData.latitude && gpsMetaData.longitude) {
+        setGpsData({
+          latitude: gpsMetaData.latitude,
+          longitude: gpsMetaData.longitude,
+        });
+      } else {
+        setGpsData(null);
+      }
+    } catch (err) {
+      console.error('Failed to parse EXIF:', err);
+      setMetadata({ error: 'Failed to read EXIF metadata' });
+      setGpsData(null);
+    }
+  };
+
+  // Initialize map when gpsData changes
+  useEffect(() => {
+    if (gpsData && mapRef.current) {
+      // Create a vector source and layer for the marker
+      const marker = new Feature({
+        geometry: new Point(fromLonLat([gpsData.longitude, gpsData.latitude])),
+      });
+
+      const markerStyle = new Style({
+        image: new Icon({
+          anchor: [0.5, 1],
+          src: '/marker-icon.png', // Place a marker icon in public/marker-icon.png
+        }),
+      });
+      marker.setStyle(markerStyle);
+
+      const vectorSource = new VectorSource({
+        features: [marker],
+      });
+
+      const vectorLayer = new VectorLayer({
+        source: vectorSource,
+      });
+
+      // Initialize the map
+      mapInstance.current = new Map({
+        target: mapRef.current,
+        layers: [
+          new TileLayer({
+            source: new OSM(), // OpenStreetMap tiles (no API key)
+          }),
+          vectorLayer,
+        ],
+        view: new View({
+          center: fromLonLat([gpsData.longitude, gpsData.latitude]),
+          zoom: 13,
+        }),
+      });
+
+      // Cleanup map on component unmount or gpsData change
+      return () => {
+        if (mapInstance.current) {
+          mapInstance.current.setTarget(undefined);
+          mapInstance.current = null;
+        }
+      };
+    }
+  }, [gpsData]);
+
+  return (
+    <main className="min-h-screen bg-gray-100 text-gray-900 p-6">
+      <div className="max-w-2xl mx-auto bg-white p-6 rounded-xl shadow-md">
+        <h1 className="text-3xl font-bold mb-6 text-center">📷 EXIF Metadata Viewer</h1>
+
+        <input
+          type="file"
+          accept="image/*"
+          onChange={handleFileChange}
+          className="mb-4 block w-full border border-gray-300 rounded-lg shadow-sm file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+        />
+
+        {imageSrc && (
+          <div className="mb-6">
+            <img
+              src={imageSrc}
+              alt="Uploaded preview"
+              className="max-w-full rounded-lg shadow-sm"
             />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
+          </div>
+        )}
+
+        {gpsData && (
+          <div className="mb-6">
+            <h2 className="text-xl font-semibold mb-2">Location:</h2>
+            <div ref={mapRef} className="h-64 w-full rounded-lg shadow-sm"></div>
+          </div>
+        )}
+
+        {Object.keys(metadata).length > 0 && (
+          <div>
+            <h2 className="text-xl font-semibold mb-2">Metadata:</h2>
+            <ul className="text-sm bg-gray-50 rounded-lg p-4 space-y-2 max-h-[400px] overflow-auto border">
+              {Object.entries(metadata).map(([key, value]) => (
+                <li key={key}>
+                  <strong>{key}:</strong>{' '}
+                  {typeof value === 'object' && value !== null
+                    ? JSON.stringify(value, null, 2)
+                    : String(value)}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </main>
   );
 }
